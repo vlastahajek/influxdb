@@ -2403,6 +2403,7 @@ spec:
 
 				require.Len(t, props.Queries, 1)
 
+				// parmas
 				queryText := `option params = {
 	bucket: "bar",
 	start: -24h0m0s,
@@ -3464,6 +3465,41 @@ from(bucket: params.bucket)
 					},
 				}
 				assert.Equal(t, expectedRefs, actual.EnvReferences)
+			})
+		})
+
+		t.Run("with task option should be valid", func(t *testing.T) {
+			testfileRunner(t, "testdata/task_v2.yml", func(t *testing.T, template *Template) {
+				actual := template.Summary().Tasks
+				require.Len(t, actual, 1)
+
+				expectedEnvRefs := []SummaryReference{
+					{
+						Field:        "spec.params.every",
+						EnvRefKey:    "tasks[task-1].spec.task.every",
+						ValType:      "duration",
+						DefaultValue: time.Minute,
+					},
+					{
+						Field:        "metadata.name",
+						EnvRefKey:    "tasks[task-1].spec.task.name",
+						ValType:      "string",
+						DefaultValue: "bar",
+					},
+					{
+						Field:        "spec.params.name",
+						EnvRefKey:    "tasks[task-1].spec.task.name",
+						ValType:      "string",
+						DefaultValue: "bar",
+					},
+					{
+						Field:        "spec.params.offset",
+						EnvRefKey:    "tasks[task-1].spec.task.offset",
+						ValType:      "duration",
+						DefaultValue: time.Minute * 3,
+					},
+				}
+				assert.Equal(t, expectedEnvRefs, actual[0].EnvReferences)
 			})
 		})
 
@@ -4661,9 +4697,9 @@ func newParsedTemplate(t *testing.T, fn ReaderFn, encoding Encoding, opts ...Val
 	template, err := Parse(encoding, fn, opts...)
 	require.NoError(t, err)
 
-	for _, k := range template.Objects {
-		require.Equal(t, APIVersion, k.APIVersion)
-	}
+	// for _, k := range template.Objects {
+	// 	require.Equal(t, APIVersion2, k.APIVersion)
+	// }
 
 	require.True(t, template.isParsed)
 	return template

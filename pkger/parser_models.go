@@ -1816,6 +1816,7 @@ type task struct {
 	offset      time.Duration
 	query       query
 	status      string
+	task        []*references
 
 	labels sortedLabels
 }
@@ -1860,6 +1861,7 @@ func (t *task) summarize() SummaryTask {
 	sort.Slice(refs, func(i, j int) bool {
 		return refs[i].EnvRefKey < refs[j].EnvRefKey
 	})
+
 	return SummaryTask{
 		SummaryIdentifier: SummaryIdentifier{
 			Kind:          KindTask,
@@ -1883,6 +1885,7 @@ func (t *task) valid() []validationErr {
 	if err, ok := isValidName(t.Name(), 1); !ok {
 		vErrs = append(vErrs, err)
 	}
+
 	if t.cron == "" && t.every == 0 {
 		vErrs = append(vErrs,
 			validationErr{
