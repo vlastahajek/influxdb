@@ -14,6 +14,7 @@ type resultSet struct {
 	seriesCursor SeriesCursor
 	seriesRow    SeriesRow
 	arrayCursors *arrayCursors
+	err          error
 }
 
 func NewFilteredResultSet(ctx context.Context, req *datatypes.ReadFilterRequest, seriesCursor SeriesCursor) ResultSet {
@@ -24,7 +25,7 @@ func NewFilteredResultSet(ctx context.Context, req *datatypes.ReadFilterRequest,
 	}
 }
 
-func (r *resultSet) Err() error { return nil }
+func (r *resultSet) Err() error { return r.err }
 
 // Close closes the result set. Close is idempotent.
 func (r *resultSet) Close() {
@@ -37,7 +38,7 @@ func (r *resultSet) Close() {
 
 // Next returns true if there are more results available.
 func (r *resultSet) Next() bool {
-	if r == nil {
+	if r == nil || r.err != nil {
 		return false
 	}
 
@@ -54,7 +55,7 @@ func (r *resultSet) Next() bool {
 func (r *resultSet) Cursor() cursors.Cursor {
 	cur := r.arrayCursors.createCursor(r.seriesRow)
 	if r.agg != nil {
-		cur = newAggregateArrayCursor(r.ctx, r.agg, cur)
+		cur, r.err = newAggregateArrayCursor(r.ctx, r.agg, cur)
 	}
 	return cur
 }

@@ -283,9 +283,10 @@ type groupNoneCursor struct {
 	cur          SeriesCursor
 	row          SeriesRow
 	keys         [][]byte
+	err          error
 }
 
-func (c *groupNoneCursor) Err() error                 { return nil }
+func (c *groupNoneCursor) Err() error                 { return c.err }
 func (c *groupNoneCursor) Tags() models.Tags          { return c.row.Tags }
 func (c *groupNoneCursor) Keys() [][]byte             { return c.keys }
 func (c *groupNoneCursor) PartitionKeyVals() [][]byte { return nil }
@@ -298,7 +299,7 @@ func (c *groupNoneCursor) Aggregate() *datatypes.Aggregate {
 
 func (c *groupNoneCursor) Next() bool {
 	row := c.cur.Next()
-	if row == nil {
+	if row == nil || c.err != nil {
 		return false
 	}
 
@@ -310,7 +311,7 @@ func (c *groupNoneCursor) Next() bool {
 func (c *groupNoneCursor) Cursor() cursors.Cursor {
 	cur := c.arrayCursors.createCursor(c.row)
 	if c.agg != nil {
-		cur = newAggregateArrayCursor(c.ctx, c.agg, cur)
+		cur, _ = newAggregateArrayCursor(c.ctx, c.agg, cur)
 	}
 	return cur
 }
@@ -323,6 +324,7 @@ type groupByCursor struct {
 	seriesRows   []*SeriesRow
 	keys         [][]byte
 	vals         [][]byte
+	err          error
 }
 
 func (c *groupByCursor) reset(seriesRows []*SeriesRow) {
@@ -330,7 +332,7 @@ func (c *groupByCursor) reset(seriesRows []*SeriesRow) {
 	c.seriesRows = seriesRows
 }
 
-func (c *groupByCursor) Err() error                 { return nil }
+func (c *groupByCursor) Err() error                 { return c.err }
 func (c *groupByCursor) Keys() [][]byte             { return c.keys }
 func (c *groupByCursor) PartitionKeyVals() [][]byte { return c.vals }
 func (c *groupByCursor) Tags() models.Tags          { return c.seriesRows[c.i-1].Tags }
@@ -341,7 +343,7 @@ func (c *groupByCursor) Aggregate() *datatypes.Aggregate {
 }
 
 func (c *groupByCursor) Next() bool {
-	if c.i < len(c.seriesRows) {
+	if c.i < len(c.seriesRows) && c.err == nil {
 		c.i++
 		return true
 	}
@@ -351,7 +353,7 @@ func (c *groupByCursor) Next() bool {
 func (c *groupByCursor) Cursor() cursors.Cursor {
 	cur := c.arrayCursors.createCursor(*c.seriesRows[c.i-1])
 	if c.agg != nil {
-		cur = newAggregateArrayCursor(c.ctx, c.agg, cur)
+		cur, c.err = newAggregateArrayCursor(c.ctx, c.agg, cur)
 	}
 	return cur
 }

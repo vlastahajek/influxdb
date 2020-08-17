@@ -17,6 +17,7 @@ type windowAggregateResultSet struct {
 	cursor       SeriesCursor
 	seriesRow    *SeriesRow
 	arrayCursors *arrayCursors
+	err          error
 }
 
 func NewWindowAggregateResultSet(ctx context.Context, req *datatypes.ReadWindowAggregateRequest, cursor SeriesCursor) (ResultSet, error) {
@@ -53,7 +54,7 @@ func NewWindowAggregateResultSet(ctx context.Context, req *datatypes.ReadWindowA
 }
 
 func (r *windowAggregateResultSet) Next() bool {
-	if r == nil {
+	if r == nil || r.err != nil {
 		return false
 	}
 	r.seriesRow = r.cursor.Next()
@@ -68,15 +69,25 @@ func (r *windowAggregateResultSet) Cursor() cursors.Cursor {
 
 	if every == math.MaxInt64 {
 		// This means to aggregate over whole series for the query's time range
-		return newAggregateArrayCursor(r.ctx, agg, cursor)
+		cur, err := newAggregateArrayCursor(r.ctx, agg, cursor)
+		if err != nil {
+			r.err = err
+			return nil
+		}
+		return cur
 	} else {
-		return newWindowAggregateArrayCursor(r.ctx, agg, every, offset, cursor)
+		cur, err := newWindowAggregateArrayCursor(r.ctx, agg, every, offset, cursor)
+		if err != nil {
+			r.err = err
+			return nil
+		}
+		return cur
 	}
 }
 
 func (r *windowAggregateResultSet) Close() {}
 
-func (r *windowAggregateResultSet) Err() error { return nil }
+func (r *windowAggregateResultSet) Err() error { return r.err }
 
 func (r *windowAggregateResultSet) Stats() cursors.CursorStats {
 	if r.seriesRow == nil || r.seriesRow.Query == nil {
