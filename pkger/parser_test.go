@@ -3481,7 +3481,7 @@ from(bucket: params.bucket)
 						DefaultValue: time.Minute,
 					},
 					{
-						Field:        "metadata.name",
+						Field:        "spec.name",
 						EnvRefKey:    "tasks[task-1].spec.task.name",
 						ValType:      "string",
 						DefaultValue: "bar",

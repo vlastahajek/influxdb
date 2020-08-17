@@ -1120,7 +1120,7 @@ func (p *Template) graphTasks() *parseErr {
 			for _, v := range t.query.params {
 				switch v.EnvRef {
 				case pref + "name":
-					t.name = v
+					t.displayName = v
 				case pref + "every":
 					t.every = v.defaultVal.(time.Duration)
 				case pref + "offset":
