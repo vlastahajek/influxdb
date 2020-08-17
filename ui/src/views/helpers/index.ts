@@ -406,7 +406,7 @@ const NEW_VIEW_CREATORS = {
 type CreateViewType = ViewType | CheckType
 
 export function createView<T extends ViewProperties = ViewProperties>(
-  viewType: CreateViewType = 'xy'
+  viewType: CreateViewType = 'band'
 ): NewView<T> {
   const creator = NEW_VIEW_CREATORS[viewType]
 
