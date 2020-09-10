@@ -3,12 +3,7 @@ package upgrade
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/user"
-	"path/filepath"
-
 	"github.com/influxdata/influxdb/v2"
-	"github.com/influxdata/influxdb/v2/authorizer"
 	"github.com/influxdata/influxdb/v2/bolt"
 	"github.com/influxdata/influxdb/v2/dbrp"
 	"github.com/influxdata/influxdb/v2/internal/fs"
@@ -17,11 +12,15 @@ import (
 	"github.com/influxdata/influxdb/v2/kv"
 	"github.com/influxdata/influxdb/v2/kv/migration"
 	"github.com/influxdata/influxdb/v2/kv/migration/all"
+	fs2 "github.com/influxdata/influxdb/v2/pkg/fs"
 	"github.com/influxdata/influxdb/v2/tenant"
 	"github.com/influxdata/influxdb/v2/v1/services/meta"
 	"github.com/influxdata/influxdb/v2/v1/services/meta/filestore"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"os"
+	"os/user"
+	"path/filepath"
 )
 
 var Command = &cobra.Command{
@@ -48,7 +47,6 @@ var options = struct {
 
 func init() {
 	flags := Command.Flags()
-
 	// source flags
 	v1dir, err := influxDirV1()
 	if err != nil {
@@ -75,6 +73,7 @@ type influxDBv1 struct {
 }
 
 type influxDBv2 struct {
+	log         *zap.Logger
 	boltClient  *bolt.Client
 	store       *bolt.KVStore
 	kvStore     kv.SchemaStore
@@ -99,18 +98,172 @@ func runUpgradeE(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_ = v2
+	log := v2.log.With(zap.String("service", "upgrade"))
+	err = upgradeDatabases(ctx, v1, v2, log)
+	if err != nil {
+		return err
+	}
+	log.Info("Upgrade successfully completed. Start service now")
+
+	return nil
+}
+
+func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *zap.Logger) (err error) {
 
 	// 1. Onboard the initial admin user
-	// v2.onboardSvc.OnboardInitialUser()
+	// if onboarding has been already completed do not run now
+	canOnboard, err := v2.onboardSvc.IsOnboarding(ctx)
+	if err != nil {
+		return err
+	}
+	orgID := influxdb.ID(0)
+	if canOnboard {
 
+		req := &influxdb.OnboardingRequest{
+			User:            "my-user",
+			Password:        "my-password",
+			Org:             "my-org",
+			Bucket:          "my-bucket",
+			RetentionPeriod: 0,
+		}
+		log.Debug("onboarding")
+		res, err := v2.onboardSvc.OnboardInitialUser(ctx, req)
+		if err != nil {
+			return fmt.Errorf("onboarding error: %w", err)
+		}
+		orgID = res.Org.ID
+	} else {
+		orgName := "my-org"
+
+		org, err := v2.ts.FindOrganization(ctx, influxdb.OrganizationFilter{
+			Name: &orgName,
+		})
+		if err != nil {
+			return fmt.Errorf("error finding org %s: %w", orgName, err)
+		}
+		orgID = org.ID
+	}
 	// 2. read each database / retention policy from v1.meta and create bucket db-name/rp-name
-	// newBucket := v2.ts.CreateBucket(ctx, Bucket{})
+	//newBucket := v2.ts.CreateBucket(ctx, Bucket{})
 	//
 	// 3. create database in v2.meta
 	// v2.meta.CreateDatabase(newBucket.ID.String())
 	// copy shard info from v1.meta
 
+	if len(v1.meta.Databases()) > 0 {
+		// Check space
+		log.Info("Checking space")
+		v1dir := filepath.Clean(filepath.Join(options.source.metaDir, ".."))
+		sourceDataPath := filepath.Join(v1dir, "data")
+		size, err := fs2.DirSize(sourceDataPath)
+		if err != nil {
+			return fmt.Errorf("error opening getting size of %s: %w", sourceDataPath, err)
+		}
+		v2dir := filepath.Dir(options.target.boltPath)
+		diskInfo, err := fs2.DiskUsage(v2dir)
+		if err != nil {
+			return fmt.Errorf("error getting info of disk %s: %w", v2dir, err)
+		}
+		log.Debug("disk space info",
+			zap.String("Free space", fs2.HumanSize(diskInfo.Free)),
+			zap.String("Needed space", fs2.HumanSize(size)))
+		if size > diskInfo.Free {
+			return fmt.Errorf("not enough space on target disk of %s: need %d, available %d ", v2dir, size, diskInfo.Free)
+		}
+		log.Info("Creating databases")
+		database2bucketID := make(map[string]string)
+		for _, db := range v1.meta.Databases() {
+			if db.Name[0] == '_' {
+				log.Info("skipping internal ",
+					zap.String("database", db.Name))
+				continue
+			}
+			log.Info("upgrading database ",
+				zap.String("database", db.Name))
+
+			for _, rp := range db.RetentionPolicies {
+				bucket := &influxdb.Bucket{
+					OrgID:               orgID,
+					Type:                influxdb.BucketTypeUser,
+					Name:                db.Name + "-" + rp.Name,
+					Description:         fmt.Sprintf("Upgraded from v1 database %s with retention policy %s", db.Name, rp.Name),
+					RetentionPolicyName: rp.Name,
+					RetentionPeriod:     rp.Duration,
+				}
+				log.Debug("Creating bucket ",
+					zap.String("Bucket", bucket.Name))
+
+				err := v2.ts.CreateBucket(ctx, bucket)
+				if err != nil {
+					return fmt.Errorf("error creating bucket %s: %w", bucket.Name, err)
+
+				}
+
+				database2bucketID[db.Name] = bucket.ID.String()
+
+				log.Debug("Creating database with retention policy",
+					zap.String("database", bucket.ID.String()))
+
+				dbv2, err := v2.meta.CreateDatabaseWithRetentionPolicy(bucket.ID.String(), rp.ToSpec())
+				if err != nil {
+					return fmt.Errorf("error creating database %s: %w", bucket.ID.String(), err)
+				}
+				mapping := &influxdb.DBRPMappingV2{
+					Database:        db.Name,
+					RetentionPolicy: rp.Name,
+					Default:         true,
+					OrganizationID:  orgID,
+					BucketID:        bucket.ID,
+				}
+
+				log.Debug("Creating mapping",
+					zap.String("database", mapping.Database),
+					zap.String("retention policy", mapping.RetentionPolicy),
+					zap.String("orgID", mapping.OrganizationID.String()),
+					zap.String("bucketID", mapping.BucketID.String()))
+
+				err = v2.dbrpSvc.Create(ctx, mapping)
+				if err != nil {
+					return fmt.Errorf("error creating mapping  %s/%s -> Org %s, bucket %s: %w", mapping.Database, mapping.RetentionPolicy, mapping.OrganizationID.String(), mapping.BucketID.String(), err)
+				}
+				for _, sg := range rp.ShardGroups {
+					log.Debug("Creating shard group",
+						zap.String("database", dbv2.Name),
+						zap.String("retention policy", dbv2.DefaultRetentionPolicy),
+						zap.Time("time", sg.StartTime))
+					_, err = v2.meta.CreateShardGroup(dbv2.Name, dbv2.DefaultRetentionPolicy, sg.StartTime)
+					if err != nil {
+						return fmt.Errorf("error creating database %s: %w", bucket.ID.String(), err)
+					}
+				}
+			}
+		}
+		log.Info("Copying data")
+		targetPath := filepath.Join(v2dir, "engine", "data")
+		err = fs2.CopyDir(sourceDataPath,
+			targetPath,
+			func(name string) string {
+				if newName, ok := database2bucketID[name]; ok {
+					return newName
+				}
+				return name
+			},
+			func(path string) bool {
+				base := filepath.Base(path)
+				if base == "_series" ||
+					(len(base) > 0 && base[0] == '_') || //skip internal databases
+					base == "index" {
+					return true
+				}
+				return false
+			},
+			nil)
+		if err != nil {
+			return fmt.Errorf("error copying v1 data from %s to %s: %w", sourceDataPath, targetPath, err)
+		}
+	} else {
+		log.Info("No database found")
+	}
 	return nil
 }
 
@@ -125,10 +278,11 @@ func newInfluxDBv1(opts *optionsV1) (svc *influxDBv1, err error) {
 }
 
 func newInfluxDBv2(ctx context.Context, opts *optionsV2) (svc *influxDBv2, err error) {
-	log := zap.NewNop()
+	log, _ := zap.NewDevelopment()
 	reg := prom.NewRegistry(log.With(zap.String("service", "prom_registry")))
 
 	svc = &influxDBv2{}
+	svc.log = log
 
 	// *********************
 	// V2 specific services
@@ -179,7 +333,7 @@ func newInfluxDBv2(ctx context.Context, opts *optionsV2) (svc *influxDBv2, err e
 	}
 
 	// DB/RP service
-	svc.dbrpSvc = dbrp.NewService(ctx, authorizer.NewBucketService(svc.ts.BucketService), svc.kvStore)
+	svc.dbrpSvc = dbrp.NewService(ctx, svc.ts.BucketService, svc.kvStore)
 
 	// on-boarding service (influx setup)
 	svc.onboardSvc = tenant.NewOnboardService(svc.ts, authSvc)

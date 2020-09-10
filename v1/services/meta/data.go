@@ -1132,6 +1132,16 @@ func DefaultRetentionPolicyInfo() *RetentionPolicyInfo {
 	return NewRetentionPolicyInfo(DefaultRetentionPolicyName)
 }
 
+// ToSpec returns RetentionPolicySpec instance with the same data as in RetentionPolicyInfo
+func (rpi *RetentionPolicyInfo) ToSpec() *RetentionPolicySpec {
+	return &RetentionPolicySpec{
+		Name:               rpi.Name,
+		ReplicaN:           &rpi.ReplicaN,
+		Duration:           &rpi.Duration,
+		ShardGroupDuration: rpi.ShardGroupDuration,
+	}
+}
+
 // Apply applies a specification to the retention policy info.
 func (rpi *RetentionPolicyInfo) Apply(spec *RetentionPolicySpec) *RetentionPolicyInfo {
 	rp := &RetentionPolicyInfo{

@@ -63,6 +63,50 @@ var v2DumpMetaCommand = &cobra.Command{
 		_ = tw.Flush()
 		fmt.Fprintln(os.Stdout)
 
+		fmt.Fprintln(os.Stdout, "Databases")
+		fmt.Fprintln(os.Stdout, "---------")
+		fmt.Fprintf(tw, "%s\t%s\n", "Name", "Default RP")
+		for _, row := range svc.meta.Databases() {
+			fmt.Fprintf(tw, "%s\t%s\n", row.Name, row.DefaultRetentionPolicy)
+		}
+		_ = tw.Flush()
+		fmt.Fprintln(os.Stdout)
+
+		fmt.Fprintln(os.Stdout, "Mappings")
+		fmt.Fprintln(os.Stdout, "---------")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", "Database", "RP", "Org", "Bucket", "Default")
+		mappings, _, err := svc.dbrpSvc.FindMany(ctx, influxdb.DBRPMappingFilterV2{})
+		if err != nil {
+			return err
+		}
+		showBool := func(b bool) string {
+			if b {
+				return "yes"
+			}
+			return "no"
+		}
+		for _, row := range mappings {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", row.Database, row.RetentionPolicy, row.OrganizationID.String(), row.BucketID.String(), showBool(row.Default))
+		}
+		_ = tw.Flush()
+		fmt.Fprintln(os.Stdout)
+
+		showCheck := func(b bool) string {
+			if b {
+				return "✓"
+			}
+			return ""
+		}
+
+		fmt.Fprintln(os.Stdout, "Users")
+		fmt.Fprintln(os.Stdout, "-----")
+		fmt.Fprintf(tw, "%s\t%s\n", "Name", "Admin")
+		for _, row := range svc.meta.Users() {
+			fmt.Fprintf(tw, "%s\t%s\n", row.Name, showCheck(row.Admin))
+		}
+		_ = tw.Flush()
+		fmt.Fprintln(os.Stdout)
+
 		return nil
 	},
 }
