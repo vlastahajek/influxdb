@@ -60,13 +60,13 @@ func upgradeConfig(configFile string) error {
 	return nil
 }
 
-type properties map[string]string // private type used by `upgrade-config` command
+type properties map[string]string   // private type used by `upgrade-config` command
 type table = map[string]interface{} // private type used by `upgrade-config` command
-type config = table // private type used by `upgrade-config` command
+type config = table                 // private type used by `upgrade-config` command
 
 // private type used by `upgrade-config` command
 type configUpgrader struct {
-	rules properties
+	rules  properties
 	config config
 }
 
