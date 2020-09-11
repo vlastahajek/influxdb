@@ -208,6 +208,7 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 				if err != nil {
 					return fmt.Errorf("error creating database %s: %w", bucket.ID.String(), err)
 				}
+
 				mapping := &influxdb.DBRPMappingV2{
 					Database:        db.Name,
 					RetentionPolicy: rp.Name,
@@ -231,9 +232,22 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 						zap.String("database", dbv2.Name),
 						zap.String("retention policy", dbv2.DefaultRetentionPolicy),
 						zap.Time("time", sg.StartTime))
-					_, err = v2.meta.CreateShardGroup(dbv2.Name, dbv2.DefaultRetentionPolicy, sg.StartTime)
+					newSG, err := v2.meta.CreateShardGroup(dbv2.Name, dbv2.DefaultRetentionPolicy, sg.StartTime)
 					if err != nil {
 						return fmt.Errorf("error creating database %s: %w", bucket.ID.String(), err)
+					}
+					newSG.Shards = make([]meta.ShardInfo, len(sg.Shards))
+					for i, si := range sg.Shards {
+						log.Debug("Creating shard info",
+							zap.Uint64("shard", si.ID))
+						newSi := meta.ShardInfo{
+							ID:     sg.Shards[i].ID,
+							Owners: make([]meta.ShardOwner, len(si.Owners)),
+						}
+						newSG.Shards[i] = newSi
+						for o, so := range si.Owners {
+							newSG.Shards[i].Owners[o] = meta.ShardOwner{NodeID: so.NodeID}
+						}
 					}
 				}
 			}
