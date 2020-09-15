@@ -59,7 +59,7 @@ var options = struct {
 
 	// common flags
 	configFile string
-
+	securityScriptPath string
 }{}
 
 func init() {
@@ -88,11 +88,13 @@ func init() {
 
 	// common flags
 	flags.StringVar(&options.configFile, "config-file", "/etc/influxdb/influxdb.conf", "Path to config file")
+	flags.StringVar(&options.securityScriptPath, "security-script-path", "", "Security script path (default: stdout")
 
 	// add sub commands
 	Command.AddCommand(v1DumpMetaCommand)
 	Command.AddCommand(v2DumpMetaCommand)
 	Command.AddCommand(upgradeConfigCommand) // TODO for testing purposes
+	Command.AddCommand(generateSecurityScriptCommand) // TODO for testing purposes
 }
 
 type influxDBv1 struct {
@@ -142,6 +144,7 @@ func runUpgradeE(*cobra.Command, []string) error {
 	}
 
 	// TODO call upgradeConfig()
+	// TODO call generateSecurityScript(ctx, v1, v2)
 
 	log.Info("Upgrade successfully completed. Start service now")
 
