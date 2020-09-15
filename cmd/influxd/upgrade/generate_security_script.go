@@ -110,22 +110,28 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 	}
 
 	// generate the script
-	var comment, set, fi, join string
+	var comment, set, fi, nl, join string
 	if helper.isWin() {
 		comment = "REM"
 		set = "set "
 		if isFo {
-			fi = ") >> %%LOG%% 2>&1\n"
+			fi = ") >> %LOG% 2>&1"
 		} else {
 			fi = ")"
 		}
+		nl = "  echo."
 		join = " ^\n  && "
 		scriptln("@ECHO OFF")
 		script()
 	} else {
 		comment = "#"
 		set = ""
-		fi = "fi"
+		if isFo {
+			fi = "} 2>&1 | tee -a $LOG\nfi"
+		} else {
+			fi = "fi"
+		}
+		nl = "  echo"
 		join = " && \\\n  "
 		scriptln("#!/bin/sh")
 		script()
@@ -171,21 +177,20 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 	scriptf("%s INDIVIDUAL USER UPGRADES\n", comment)
 	scriptln(comment)
 	script()
-	if isFo {
-		if !helper.isWin() {
-			scriptln("{")
-			script()
-		}
-	}
 	for _, row := range helper.sortUserInfo(v1meta.Users()) {
 		username := row.Name
 		if helper.isWin() {
 			scriptf("IF /I \"%%%s%%\" == \"yes\" (\n", helper.shUserVar(username))
 		} else {
-			scriptf("if [ \"$%s\" = \"yes\" ]; then\n", helper.shUserVar(username))
+			if isFo {
+				scriptf("if [ \"$%s\" = \"yes\" ]; then\n{\n", helper.shUserVar(username))
+			} else {
+				scriptf("if [ \"$%s\" = \"yes\" ]; then\n", helper.shUserVar(username))
+			}
 		}
 		if row.Admin {
-			scriptf("  echo \"User %s is 1.x admin and should be added & invited manually to 2.x if needed\"\n", username)
+			scriptln(nl)
+			scriptf("  echo User %s is 1.x admin and should be added & invited manually to 2.x if needed\n", username)
 			scriptf("  %s add & invite user %s in the InfluxDB 2.x UI\n", comment, username)
 			scriptln(fi)
 			script()
@@ -214,13 +219,14 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 			writeBucketArg = fmt.Sprintf("--write-bucket=%s", strings.Join(writeAccess, ","))
 		}
 		var cmds []string
-		cmds = append(cmds, fmt.Sprintf("  echo \"Creating user %s with password %s in %s organization...\"", username, password, targetOrg))
+		cmds = append(cmds, fmt.Sprintf("  echo Creating user %s with password %s in %s organization...", username, password, targetOrg))
 		cmds = append(cmds, fmt.Sprintf("influx user create --name=%s --password=%s --org=%s", username, password, targetOrg))
 		if len(readAccess) > 0 || len(writeAccess) > 0 {
-			cmds = append(cmds, "echo \"Creating authorization token...\"")
+			cmds = append(cmds, "echo Creating authorization token...")
 			cmds = append(cmds, fmt.Sprintf("influx auth create --user=%s --org=%s %s %s",
 				username, targetOrg, readBucketArg, writeBucketArg))
 		}
+		scriptln(nl)
 		scriptln(strings.Join(cmds, join))
 		scriptln(fi)
 		script()
@@ -237,8 +243,6 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 			scriptln("echo.")
 			scriptln("echo Output saved to %LOG%")
 		} else {
-			scriptln("} 2>&1 | tee $LOG")
-			script()
 			scriptln("echo")
 			scriptln("echo Output saved to $LOG")
 		}
