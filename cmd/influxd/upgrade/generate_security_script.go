@@ -87,6 +87,7 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 
 	// create output
 	var output *os.File
+	var isFo bool
 	if options.securityScriptPath == "" {
 		output = os.Stdout
 	} else {
@@ -94,6 +95,7 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 		if err != nil {
 			return errors.New(fmt.Sprintf("upgrade: cannot create security script: %v", err))
 		}
+		isFo = true
 	}
 
 	// script printing helper funcs
@@ -108,17 +110,24 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 	}
 
 	// generate the script
-	var br, todo, fi string
+	var comment, set, fi, join string
 	if helper.isWin() {
-		br = "^"
-		todo = "REM"
+		comment = "REM"
+		set = "set "
 		fi = ")"
+		if isFo {
+			fi = fmt.Sprintf("%s >> %%LOG%% 2>&1\n", fi)
+		} else {
+			fi = ")"
+		}
+		join = " ^\n  && "
 		scriptln("@ECHO OFF")
 		script()
 	} else {
-		br = "\\"
-		todo = "#"
+		comment = "#"
+		set = ""
 		fi = "fi"
+		join = " && \\\n  "
 		scriptln("#!/bin/sh")
 		script()
 	}
@@ -126,35 +135,64 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 		username := row.Name
 		varname := helper.shUserVar(username)
 		if row.Admin {
-			scriptf("%s=no %s %s is 1.x admin, will not be upgraded automatically\n",
-				varname, todo, username)
+			if helper.isWin() {
+				scriptf("%s user %s is 1.x admin, will not be upgraded automatically\n%s%s=no\n",
+					comment, username, set, varname)
+			} else {
+				scriptf("%s%s=no %s user %s is 1.x admin, will not be upgraded automatically\n",
+					set, varname, comment, username)
+			}
+		} else if len(row.Privileges) == 0 {
+			if helper.isWin() {
+				scriptf("%s user %s has no 1.x privileges, will not be upgraded automatically\n%s%s=no\n",
+					comment, username, set, varname)
+			} else {
+				scriptf("%s%s=no %s user %s has no 1.x privileges, will not be upgraded automatically\n",
+					set, varname, comment, username)
+			}
 		} else {
-			scriptf("%s=yes %s %s\n", varname, todo, username)
+			if helper.isWin() {
+				scriptf("%s user %s\n%s%s=yes\n", comment, username, set, varname)
+			} else {
+				scriptf("%s%s=yes %s user %s\n", set, varname, comment, username)
+			}
 		}
 	}
 	script()
-	scriptln(todo)
-	scriptf("%s INDIVIDUAL USER UPGRADES\n", todo)
-	scriptln(todo)
+	if isFo {
+		if helper.isWin() {
+			scriptln("set PATH=%PATH%;C:\\WINDOWS\\system32\\wbem")
+			scriptln("for /f %%x in ('wmic os get localdatetime ^| findstr /b [0-9]') do @set X=%%x && set LOG=%~dpn0.%X:~0,8%-%X:~8,6%.log")
+		} else {
+			scriptln("LOG=\"$(basename $0 | cut -f 1 -d '.').$(date +%Y%m%d-%H%M%S).log\"")
+		}
+	}
 	script()
+	scriptln(comment)
+	scriptf("%s INDIVIDUAL USER UPGRADES\n", comment)
+	scriptln(comment)
+	script()
+	if isFo {
+		if !helper.isWin() {
+			scriptln("{")
+			script()
+		}
+	}
 	for _, row := range helper.sortUserInfo(v1meta.Users()) {
 		username := row.Name
 		if helper.isWin() {
-			scriptf("IF /I \"%%%s\" == \"yes\" (\n", helper.shUserVar(username))
+			scriptf("IF /I \"%%%s%%\" == \"yes\" (\n", helper.shUserVar(username))
 		} else {
 			scriptf("if [ \"$%s\" = \"yes\" ]; then\n", helper.shUserVar(username))
 		}
 		if row.Admin {
 			scriptf("  echo \"User %s is 1.x admin and should be added & invited manually to 2.x if needed\"\n", username)
-			scriptf("  %s add & invite user %s in the UI\n", todo, username)
+			scriptf("  %s add & invite user %s in the InfluxDB 2.x UI\n", comment, username)
 			scriptln(fi)
 			script()
 			continue
 		}
 		password := helper.generatePassword(8) // influx user create requires password
-		scriptf("  echo \"Creating user %s with password %s in %s organization...\" && %s\n", username, password, targetOrg, br)
-		influxCreateUser := fmt.Sprintf("influx user create --name=%s --password=%s --org=%s", username, password, targetOrg)
-		scriptf("  %s && %s\n", influxCreateUser, br)
 		readAccess := make([]string, 0)
 		writeAccess := make([]string, 0)
 		for database, permission := range row.Privileges {
@@ -176,10 +214,15 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 		if len(writeAccess) > 0 {
 			writeBucketArg = fmt.Sprintf("--write-bucket=%s", strings.Join(writeAccess, ","))
 		}
-		scriptf("  echo \"Creating authorization token...\" && %s\n", br)
-		influxCreateAuth := fmt.Sprintf("influx auth create --user=%s --org=%s %s %s",
-			row.Name, targetOrg, readBucketArg, writeBucketArg)
-		scriptf("  %s\n", influxCreateAuth)
+		var cmds []string
+		cmds = append(cmds, fmt.Sprintf("  echo \"Creating user %s with password %s in %s organization...\"", username, password, targetOrg))
+		cmds = append(cmds, fmt.Sprintf("influx user create --name=%s --password=%s --org=%s", username, password, targetOrg))
+		if len(readAccess) > 0 || len(writeAccess) > 0 {
+			cmds = append(cmds, "echo \"Creating authorization token...\"")
+			cmds = append(cmds, fmt.Sprintf("influx auth create --user=%s --org=%s %s %s",
+				username, targetOrg, readBucketArg, writeBucketArg))
+		}
+		scriptln(strings.Join(cmds, join))
 		scriptln(fi)
 		script()
 		// sample output per user:
@@ -189,9 +232,18 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 		// 064b485f4fe3a000	aysw_eMIF46WxKx8o0oz9bNmMVGL09AAg1Scoo1ynFJSW4uC2P3O8HyVy8NTISbNltNDFr7jAyQui3KS-ahpsQ==	xyz		064b435351b77000	[read:orgs/b20841b0f84c3b7e/buckets/8213da1997b3d89e write:orgs/b20841b0f84c3b7e/buckets/8213da1997b3d89e]
 	}
 
-	// when output goes to file, print info on stderr
-	if options.securityScriptPath != "" {
-		fmt.Fprintf(os.Stderr, "upgrade: security upgrade script saved to %s\n", options.securityScriptPath)
+	if isFo {
+		if helper.isWin() {
+			scriptln("type %LOG%")
+			scriptln("echo.")
+			scriptln("echo Output saved to %LOG%")
+		} else {
+			scriptln("} 2>&1 | tee $LOG")
+			script()
+			scriptln("echo")
+			scriptln("echo Output saved to $LOG")
+		}
+		fmt.Fprintf(os.Stderr, "security upgrade script saved to %s\n", options.securityScriptPath)
 	}
 
 	return nil
