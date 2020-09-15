@@ -2,7 +2,13 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/user"
+	"path/filepath"
+	"time"
+
 	"github.com/influxdata/influxdb/v2"
 	"github.com/influxdata/influxdb/v2/bolt"
 	"github.com/influxdata/influxdb/v2/dbrp"
@@ -14,14 +20,12 @@ import (
 	"github.com/influxdata/influxdb/v2/kv/migration/all"
 	fs2 "github.com/influxdata/influxdb/v2/pkg/fs"
 	"github.com/influxdata/influxdb/v2/storage"
+	options2 "github.com/influxdata/influxdb/v2/task/options"
 	"github.com/influxdata/influxdb/v2/tenant"
 	"github.com/influxdata/influxdb/v2/v1/services/meta"
 	"github.com/influxdata/influxdb/v2/v1/services/meta/filestore"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"os"
-	"os/user"
-	"path/filepath"
 )
 
 var Command = &cobra.Command{
@@ -35,7 +39,13 @@ type optionsV1 struct {
 }
 
 type optionsV2 struct {
-	boltPath string
+	boltPath  string
+	userName  string
+	password  string
+	orgName   string
+	bucket    string
+	token     string
+	retention string
 }
 
 var options = struct {
@@ -63,6 +73,12 @@ func init() {
 	}
 
 	flags.StringVar(&options.target.boltPath, "v2-bolt-path", filepath.Join(v2dir, "influxd.bolt"), "Path to 2.0 metadata")
+	flags.StringVarP(&options.target.userName, "username", "u", "", "primary username")
+	flags.StringVarP(&options.target.password, "password", "p", "", "password for username")
+	flags.StringVarP(&options.target.orgName, "org", "o", "", "primary organization name")
+	flags.StringVarP(&options.target.bucket, "bucket", "b", "", "primary bucket name")
+	flags.StringVarP(&options.target.retention, "retention", "r", "", "Duration bucket will retain data. 0 is infinite. Default is 0.")
+	flags.StringVarP(&options.target.token, "token", "t", "", "token for username, else auto-generated")
 
 	// add sub commands
 	Command.AddCommand(v1DumpMetaCommand)
@@ -88,8 +104,15 @@ type influxDBv2 struct {
 	enginePath  string
 }
 
-func runUpgradeE(cmd *cobra.Command, args []string) error {
+func runUpgradeE(*cobra.Command, []string) error {
 	ctx := context.Background()
+
+	if options.target.userName == "" ||
+		options.target.password == "" ||
+		options.target.orgName == "" ||
+		options.target.bucket == "" {
+		return errors.New("missing mandatory param")
+	}
 
 	v1, err := newInfluxDBv1(&options.source)
 	if err != nil {
@@ -121,13 +144,16 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 	}
 	orgID := influxdb.ID(0)
 	if canOnboard {
-
 		req := &influxdb.OnboardingRequest{
-			User:            "my-user",
-			Password:        "my-password",
-			Org:             "my-org",
-			Bucket:          "my-bucket",
-			RetentionPeriod: 0,
+			User:     options.target.userName,
+			Password: options.target.password,
+			Org:      options.target.orgName,
+			Bucket:   options.target.bucket,
+			Token:    options.target.token,
+		}
+		dur, err := rawDurationToTimeDuration(options.target.retention)
+		if dur > 0 {
+			req.RetentionPeriod = uint(dur / time.Hour)
 		}
 		log.Debug("onboarding")
 		res, err := v2.onboardSvc.OnboardInitialUser(ctx, req)
@@ -136,15 +162,7 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 		}
 		orgID = res.Org.ID
 	} else {
-		orgName := "my-org"
-
-		org, err := v2.ts.FindOrganization(ctx, influxdb.OrganizationFilter{
-			Name: &orgName,
-		})
-		if err != nil {
-			return fmt.Errorf("error finding org %s: %w", orgName, err)
-		}
-		orgID = org.ID
+		return errors.New("InfluxDB has been already set up")
 	}
 	// 2. read each database / retention policy from v1.meta and create bucket db-name/rp-name
 	//newBucket := v2.ts.CreateBucket(ctx, Bucket{})
@@ -386,4 +404,51 @@ func influxDirV1() (string, error) {
 	dir = filepath.Join(dir, ".influxdb")
 
 	return dir, nil
+}
+
+func rawDurationToTimeDuration(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+
+	if dur, err := time.ParseDuration(raw); err == nil {
+		return dur, nil
+	}
+
+	retention, err := options2.ParseSignedDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+
+	const (
+		day  = 24 * time.Hour
+		week = 7 * day
+	)
+
+	var dur time.Duration
+	for _, d := range retention.Values {
+		if d.Magnitude < 0 {
+			return 0, errors.New("must be greater than 0")
+		}
+		mag := time.Duration(d.Magnitude)
+		switch d.Unit {
+		case "w":
+			dur += mag * week
+		case "d":
+			dur += mag * day
+		case "m":
+			dur += mag * time.Minute
+		case "s":
+			dur += mag * time.Second
+		case "ms":
+			dur += mag * time.Minute
+		case "us":
+			dur += mag * time.Microsecond
+		case "ns":
+			dur += mag * time.Nanosecond
+		default:
+			return 0, errors.New("duration must be week(w), day(d), hour(h), min(m), sec(s), millisec(ms), microsec(us), or nanosec(ns)")
+		}
+	}
+	return dur, nil
 }
