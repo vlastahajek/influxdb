@@ -13,6 +13,7 @@ import (
 	"github.com/influxdata/influxdb/v2/kv/migration"
 	"github.com/influxdata/influxdb/v2/kv/migration/all"
 	fs2 "github.com/influxdata/influxdb/v2/pkg/fs"
+	"github.com/influxdata/influxdb/v2/storage"
 	"github.com/influxdata/influxdb/v2/tenant"
 	"github.com/influxdata/influxdb/v2/v1/services/meta"
 	"github.com/influxdata/influxdb/v2/v1/services/meta/filestore"
@@ -80,9 +81,11 @@ type influxDBv2 struct {
 	tenantStore *tenant.Store
 	ts          *tenant.Service
 	dbrpSvc     influxdb.DBRPMappingServiceV2
+	bucketSvc   influxdb.BucketService
 	onboardSvc  influxdb.OnboardingService
 	kvService   *kv.Service
 	meta        *meta.Client
+	enginePath  string
 }
 
 func runUpgradeE(cmd *cobra.Command, args []string) error {
@@ -193,7 +196,7 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 				log.Debug("Creating bucket ",
 					zap.String("Bucket", bucket.Name))
 
-				err := v2.ts.CreateBucket(ctx, bucket)
+				err := v2.bucketSvc.CreateBucket(ctx, bucket)
 				if err != nil {
 					return fmt.Errorf("error creating bucket %s: %w", bucket.Name, err)
 
@@ -335,7 +338,17 @@ func newInfluxDBv2(ctx context.Context, opts *optionsV2) (svc *influxDBv2, err e
 
 	// DB/RP service
 	svc.dbrpSvc = dbrp.NewService(ctx, svc.ts.BucketService, svc.kvStore)
+	svc.bucketSvc = svc.ts.BucketService
 
+	svc.enginePath = filepath.Join(filepath.Dir(svc.boltClient.Path), "engine")
+
+	engine := storage.NewEngine(
+		svc.enginePath,
+		storage.NewConfig(),
+		storage.WithMetaClient(svc.meta),
+	)
+
+	svc.ts.BucketService = storage.NewBucketService(svc.ts.BucketService, engine)
 	// on-boarding service (influx setup)
 	svc.onboardSvc = tenant.NewOnboardService(svc.ts, authSvc)
 
