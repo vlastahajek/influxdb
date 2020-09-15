@@ -26,6 +26,7 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// TODO for testing purposes
 var upgradeConfigCommand = &cobra.Command{
 	Use:   "upgrade-config",
 	Short: "Upgrade InfluxDB 1.x config to 2.x",
