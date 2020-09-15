@@ -92,7 +92,7 @@ func init() {
 	// add sub commands
 	Command.AddCommand(v1DumpMetaCommand)
 	Command.AddCommand(v2DumpMetaCommand)
-	Command.AddCommand(upgradeConfigCommand)
+	Command.AddCommand(upgradeConfigCommand) // TODO for testing purposes
 }
 
 type influxDBv1 struct {
@@ -134,11 +134,15 @@ func runUpgradeE(*cobra.Command, []string) error {
 	if err != nil {
 		return err
 	}
+
 	log := v2.log.With(zap.String("service", "upgrade"))
 	err = upgradeDatabases(ctx, v1, v2, log)
 	if err != nil {
 		return err
 	}
+
+	// TODO call upgradeConfig()
+
 	log.Info("Upgrade successfully completed. Start service now")
 
 	return nil
