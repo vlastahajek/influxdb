@@ -1,3 +1,5 @@
+//go:generate env GO111MODULE=on go run github.com/kevinburke/go-bindata/go-bindata -o upgrade_gen.go -ignore go -pkg upgrade .
+
 package upgrade
 
 import (
@@ -54,6 +56,10 @@ var options = struct {
 
 	// flags for target InfluxDB
 	target optionsV2
+
+	// common flags
+	configFile string
+
 }{}
 
 func init() {
@@ -80,9 +86,13 @@ func init() {
 	flags.StringVarP(&options.target.retention, "retention", "r", "", "Duration bucket will retain data. 0 is infinite. Default is 0.")
 	flags.StringVarP(&options.target.token, "token", "t", "", "token for username, else auto-generated")
 
+	// common flags
+	flags.StringVar(&options.configFile, "config-file", "/etc/influxdb/influxdb.conf", "Path to config file")
+
 	// add sub commands
 	Command.AddCommand(v1DumpMetaCommand)
 	Command.AddCommand(v2DumpMetaCommand)
+	Command.AddCommand(upgradeConfigCommand) // TODO for testing purposes
 }
 
 type influxDBv1 struct {
@@ -124,11 +134,15 @@ func runUpgradeE(*cobra.Command, []string) error {
 	if err != nil {
 		return err
 	}
+
 	log := v2.log.With(zap.String("service", "upgrade"))
 	err = upgradeDatabases(ctx, v1, v2, log)
 	if err != nil {
 		return err
 	}
+
+	// TODO call upgradeConfig()
+
 	log.Info("Upgrade successfully completed. Start service now")
 
 	return nil
