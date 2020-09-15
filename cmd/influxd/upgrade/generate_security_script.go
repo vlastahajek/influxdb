@@ -114,9 +114,8 @@ func generateSecurityScript(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2)
 	if helper.isWin() {
 		comment = "REM"
 		set = "set "
-		fi = ")"
 		if isFo {
-			fi = fmt.Sprintf("%s >> %%LOG%% 2>&1\n", fi)
+			fi = ") >> %%LOG%% 2>&1\n"
 		} else {
 			fi = ")"
 		}
