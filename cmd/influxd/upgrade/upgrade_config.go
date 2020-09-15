@@ -12,6 +12,8 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
+	"go.uber.org/zap"
 	"io"
 	"io/ioutil"
 	"os"
@@ -28,7 +30,7 @@ var upgradeConfigCommand = &cobra.Command{
 	Use:   "upgrade-config",
 	Short: "Upgrade InfluxDB 1.x config to 2.x",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return upgradeConfig(options.configFile)
+		return upgradeConfig()
 	},
 }
 
@@ -38,11 +40,12 @@ func init() {
 }
 
 // Backups existing config file and updates it with upgraded config.
-func upgradeConfig(configFile string) error {
+func upgradeConfig() error {
 	configUpgradeProperties, err := AssetString("upgrade_config.properties")
 	if err != nil {
 		return err
 	}
+	configFile := options.configFile
 	cu := newConfigUpgrader(configUpgradeProperties)
 	err = cu.backup(configFile)
 	if err != nil {
@@ -68,6 +71,7 @@ type config = table                 // private type used by `upgrade-config` com
 type configUpgrader struct {
 	rules  properties
 	config config
+	logger *zap.Logger
 }
 
 // private function used by `upgrade-config` command
@@ -213,11 +217,14 @@ func (cu *configUpgrader) process(c interface{}, path []string, index int) []str
 			path = append(path, key)
 			target, changed := cu.convert(path)
 			if target == nil { // entry is removed
+				cu.print("config entry %s removed (not supported in 2.x)\n", cu.prettyName(path, value, index))
 				delete(v, key)
 				path = cu.pop(path)
 				continue
 			}
 			if changed { // entry is moved
+				cu.print("config entry %s changed to %s\n",
+					cu.prettyName(path, value, index), cu.prettyName(target, value, index))
 				cu.add(value, path, target, index)
 			} else { // entry remains as is
 				cu.add(value, path, path, index)
@@ -237,6 +244,38 @@ func (cu *configUpgrader) process(c interface{}, path []string, index int) []str
 	}
 
 	return path
+}
+
+func (cu *configUpgrader) prettyName(path []string, value interface{}, index int) (pretty string) {
+	l := len(path)
+	if l == 0 { // should never happen but I'm paranoid
+		return "?"
+	}
+	name := path[l - 1]
+	var parent string
+	if len(path) > 1 {
+		parent = strings.Join(path[:l-1], ".")
+	}
+	switch value.(type) {
+	case table:
+		if index > -1 {
+			pretty = fmt.Sprintf("[[%s]]", name)
+		}
+		pretty = fmt.Sprintf("[%s]", name)
+	case []table:
+		pretty = fmt.Sprintf("[[%s]]", name)
+	default:
+		pretty = name
+	}
+	if parent != "" {
+		pretty = fmt.Sprintf("%s in [%s]", pretty, parent)
+	}
+
+	return
+}
+
+func (cu *configUpgrader) print(format string, args ...interface{}) {
+	fmt.Printf("upgrade: " + format, args...)
 }
 
 func (cu *configUpgrader) pop(path []string) []string {
