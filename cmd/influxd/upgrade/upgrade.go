@@ -176,10 +176,16 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 		log.Info("Checking space")
 		v1dir := filepath.Clean(filepath.Join(options.source.metaDir, ".."))
 		sourceDataPath := filepath.Join(v1dir, "data")
+		sourceWalPath := filepath.Join(v1dir, "wal")
 		size, err := fs2.DirSize(sourceDataPath)
 		if err != nil {
-			return fmt.Errorf("error opening getting size of %s: %w", sourceDataPath, err)
+			return fmt.Errorf("error getting size of %s: %w", sourceDataPath, err)
 		}
+		size2, err := fs2.DirSize(sourceWalPath)
+		if err != nil {
+			return fmt.Errorf("error getting size of %s: %w", sourceWalPath, err)
+		}
+		size += size2
 		v2dir := filepath.Dir(options.target.boltPath)
 		diskInfo, err := fs2.DiskUsage(v2dir)
 		if err != nil {
@@ -261,27 +267,38 @@ func upgradeDatabases(ctx context.Context, v1 *influxDBv1, v2 *influxDBv2, log *
 			}
 		}
 		log.Info("Copying data")
-		targetPath := filepath.Join(v2dir, "engine", "data")
+		targetDataPath := filepath.Join(v2.enginePath, "data")
+		targetWalPath := filepath.Join(v2.enginePath, "wal")
+		dirRenameFunc := func(name string) string {
+			if newName, ok := database2bucketID[name]; ok {
+				return newName
+			}
+			return name
+		}
+		dirFilterFunc := func(path string) bool {
+			base := filepath.Base(path)
+			if base == "_series" ||
+				(len(base) > 0 && base[0] == '_') || //skip internal databases
+				base == "index" {
+				return true
+			}
+			return false
+		}
 		err = fs2.CopyDir(sourceDataPath,
-			targetPath,
-			func(name string) string {
-				if newName, ok := database2bucketID[name]; ok {
-					return newName
-				}
-				return name
-			},
-			func(path string) bool {
-				base := filepath.Base(path)
-				if base == "_series" ||
-					(len(base) > 0 && base[0] == '_') || //skip internal databases
-					base == "index" {
-					return true
-				}
-				return false
-			},
+			targetDataPath,
+			dirRenameFunc,
+			dirFilterFunc,
 			nil)
 		if err != nil {
-			return fmt.Errorf("error copying v1 data from %s to %s: %w", sourceDataPath, targetPath, err)
+			return fmt.Errorf("error copying v1 data from %s to %s: %w", sourceDataPath, targetDataPath, err)
+		}
+		err = fs2.CopyDir(sourceWalPath,
+			targetWalPath,
+			dirRenameFunc,
+			dirFilterFunc,
+			nil)
+		if err != nil {
+			return fmt.Errorf("error copying v1 data from %s to %s: %w", sourceWalPath, targetWalPath, err)
 		}
 	} else {
 		log.Info("No database found")
